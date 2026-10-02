@@ -1,0 +1,283 @@
+g.show();
+    }
+
+    private Table keyRow(Models.ScanResult scan, Models.ModStatus mod, Models.KeyStatus key,
+                         Set<String> selectedMods, Set<String> selected, Label selectedLabel,
+                         int[] filter, Runnable rebuild){
+        Table row = new Table(Styles.grayPanel);
+        row.left();
+
+        CheckBox box = new CheckBox("");
+        String identity = key.identity(mod.modId);
+        box.setChecked(selected.contains(identity));
+        box.changed(() -> {
+            if(box.isChecked()) selected.add(identity);
+            else selected.remove(identity);
+            updateSelectedLabel(selectedLabel, scan, selectedMods, selected);
+            if(filter[0] == 7) rebuild.run();
+        });
+        row.add(box).width(44f).top().padTop(5f);
+
+        Table text = new Table();
+        text.top().left();
+        text.defaults().growX().left();
+
+        String keyName = key.metadata ? "[accent]" + TranslationBridgeService.metadataLabel(key.key) + "[]" : "[accent]" + key.key + "[]";
+        text.add(keyName + "  " + stateLabel(key.state)).wrap().row();
+        text.add("[lightgray]原文：[] " + preview(key.source, 180)).wrap().padTop(2f).row();
+        if(TranslationCore.nonEmpty(key.currentTranslation)){
+            text.add("[lightgray]当前：[] " + preview(key.currentTranslation, 180)).wrap().padTop(2f).row();
+        }
+        row.add(text).growX().pad(6f);
+        row.clicked(() -> {
+            box.setChecked(!box.isChecked());
+            box.fire(new arc.scene.event.ChangeListener.ChangeEvent());
+        });
+        return row;
+    }
+
+    private static String stateLabel(Models.KeyState state){
+        switch(state){
+            case cacheValid: return "[accent]Bridge[]";
+            case official: return "[green]原 Mod[]";
+            case suspectUntranslated: return "[orange]疑似未翻译[]";
+            case missing: return "[scarlet]缺失[]";
+            case expired: return "[orange]过期[]";
+            default: return "";
+        }
+    }
+
+    private void showKeyFilterChooser(int current, IntConsumer chosen){
+        showChoiceDialog("筛选条目", KEY_FILTER_NAMES, current, chosen);
+    }
+
+    private void showExportPresetChooser(int current, IntConsumer chosen){
+        showChoiceDialog("批量选择范围", EXPORT_PRESET_NAMES, current, chosen);
+    }
+
+    private void showChoiceDialog(String title, String[] labels, int current, IntConsumer chosen){
+        BaseDialog dialog = new BaseDialog(title);
+        dialog.addCloseButton();
+        Table list = new Table();
+        list.top().left();
+        list.defaults().growX().height(50f).pad(2f);
+        for(int i = 0; i < labels.length; i++){
+            final int choice = i;
+            String prefix = i == current ? "[accent]✓ []" : "";
+            TextButton button = new TextButton(prefix + labels[i], Styles.flatt);
+            button.getLabel().setWrap(true);
+            button.getLabel().setAlignment(Align.left);
+            button.clicked(() -> {
+                dialog.hide();
+                chosen.accept(choice);
+            });
+            list.add(button).growX().row();
+        }
+        dialog.cont.add(verticalPane(list)).grow();
+        dialog.show();
+    }
+
+    private static boolean exportableMod(Models.ModStatus mod){
+        return mod.supported && mod.error == null && !mod.keys.isEmpty();
+    }
+
+    private static void selectExportMods(Models.ScanResult scan, Set<String> selectedMods){
+        selectedMods.clear();
+        for(Models.ModStatus mod : scan.mods) if(exportableMod(mod)) selectedMods.add(mod.modId);
+    }
+
+    private static void selectPending(Models.ScanResult scan, Set<String> selected){
+        selected.clear();
+        for(Models.ModStatus mod : scan.mods){
+            if(!exportableMod(mod)) continue;
+            for(Models.KeyStatus key : mod.keys) if(key.pending()) selected.add(key.identity(mod.modId));
+        }
+    }
+
+    private static void applyExportPreset(Models.ScanResult scan, Set<String> selected, int preset){
+        if(preset == 7) return;
+        for(Models.ModStatus mod : scan.mods){
+            if(!exportableMod(mod)) continue;
+            for(Models.KeyStatus key : mod.keys){
+                boolean include;
+                switch(preset){
+                    case 0: include = key.pending(); break;
+                    case 1: include = key.state == Models.KeyState.missing; break;
+                    case 2: include = key.state == Models.KeyState.suspectUntranslated; break;
+                    case 3: include = key.state == Models.KeyState.expired; break;
+                    case 4: include = key.state == Models.KeyState.official; break;
+                    case 5: include = key.state == Models.KeyState.cacheValid; break;
+                    case 6: include = true; break;
+                    default: include = false;
+                }
+                if(include) selected.add(key.identity(mod.modId));
+            }
+        }
+    }
+
+    private static boolean matchesFilter(Models.KeyStatus key, int filter, Set<String> selected, String modId){
+        switch(filter){
+            case 0: return true;
+            case 1: return key.pending();
+            case 2: return key.state == Models.KeyState.missing;
+            case 3: return key.state == Models.KeyState.suspectUntranslated;
+            case 4: return key.state == Models.KeyState.expired;
+            case 5: return key.state == Models.KeyState.official;
+            case 6: return key.state == Models.KeyState.cacheValid;
+            case 7: return selected.contains(key.identity(modId));
+            default: return true;
+        }
+    }
+
+    private static boolean matchesSearch(Models.KeyStatus key, String query){
+        if(query.isEmpty()) return true;
+        return containsSearch(key.key, query)
+            || containsSearch(key.source, query)
+            || containsSearch(key.currentTranslation, query)
+            || (key.metadata && containsSearch(TranslationBridgeService.metadataLabel(key.key), query));
+    }
+
+    private static String normalizeSearch(String value){
+        return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private static boolean containsSearch(String value, String query){
+        return value != null && value.toLowerCase(Locale.ROOT).contains(query);
+    }
+
+    private static int countSelectedEntries(Models.ModStatus mod, Set<String> selected){
+        int count = 0;
+        for(Models.KeyStatus key : mod.keys) if(selected.contains(key.identity(mod.modId))) count++;
+        return count;
+    }
+
+    private static int countSelectedForMods(Models.ScanResult scan, Set<String> selectedMods, Set<String> selected){
+        int count = 0;
+        for(Models.ModStatus mod : scan.mods){
+            if(!selectedMods.contains(mod.modId)) continue;
+            count += countSelectedEntries(mod, selected);
+        }
+        return count;
+    }
+
+    private static void updateSelectedLabel(Label label, Models.ScanResult scan, Set<String> selectedMods, Set<String> selected){
+        label.setText("本次导出 Mod：[accent]" + selectedMods.size() + "[] · 条目：[accent]" +
+            countSelectedForMods(scan, selectedMods, selected) + "[]");
+    }
+
+    private String selectedJson(Models.ScanResult scan, Set<String> selectedMods, Set<String> selected){
+        int count = countSelectedForMods(scan, selectedMods, selected);
+        if(selectedMods.isEmpty()){
+            Vars.ui.showInfo("请至少选择一个 Mod。");
+            return null;
+        }
+        if(count == 0){
+            Vars.ui.showInfo("当前没有选中任何可导出的条目。");
+            return null;
+        }
+        return service.exportSelectedEntries(scan, selectedMods, selected);
+    }
+
+    private void exportJsonToFile(Models.ScanResult scan, String json){
+        String defaultName = "mindustry-translation-" + scan.locale + ".json";
+        FileChooser.save(false, "json").defaultFileName(defaultName).submit(file -> runGuarded(() -> {
+            file.writeString(json, false, "UTF-8");
+            Vars.ui.showInfo("已导出 " + countEntries(json) + " 条翻译到：\n" + file.path());
+        }));
+    }
+
+    private void copyJson(String json, Runnable done){
+        byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
+        if(bytes.length > LARGE_CLIPBOARD_BYTES){
+            Vars.ui.showConfirm("内容约 " + humanBytes(bytes.length) + "，大批量 JSON 通过剪贴板可能被系统截断。\n\n仍然复制？", () -> {
+                Core.app.setClipboardText(json);
+                done.run();
+                Vars.ui.showInfo("JSON 已复制到剪贴板。");
+            });
+            return;
+        }
+        Core.app.setClipboardText(json);
+        done.run();
+        Vars.ui.showInfo("JSON 已复制到剪贴板。");
+    }
+
+    private void chooseImport(){
+        FileChooser.open("json").submit(file -> runGuarded(() -> {
+            Models.ImportPlan plan = service.parseImport(file);
+            previewImport(plan, file.path());
+        }));
+    }
+
+    private void importFromClipboard(){
+        runGuarded(() -> {
+            String text = Core.app.getClipboardText();
+            if(text == null || text.trim().isEmpty()){
+                Vars.ui.showInfo("剪贴板中没有 JSON 内容。");
+                return;
+            }
+            Models.ImportPlan plan = service.parseImportText(text);
+            previewImport(plan, "剪贴板");
+        });
+    }
+
+    private void previewImport(Models.ImportPlan plan, String sourceName){
+        StringBuilder message = new StringBuilder();
+        message.append("来源：").append(sourceName).append("\n");
+        message.append("目标语言：").append(plan.locale).append("\n");
+        message.append("可写入缓存：").append(plan.accepted.size()).append("\n");
+        message.append("格式警告条目：").append(plan.warningEntryCount()).append("\n");
+        message.append("空 translation 忽略：").append(plan.emptyIgnored).append("\n");
+        message.append("重复项忽略：").append(plan.duplicateIgnored).append("\n");
+        message.append("拒绝项：").append(plan.rejected.size()).append("\n");
+
+        if(!plan.warnings.isEmpty()){
+            message.append("\n[orange]格式警告（可继续导入）：[]\n");
+            int max = Math.min(12, plan.warnings.size());
+            for(int i = 0; i < max; i++){
+                Models.ImportWarning warning = plan.warnings.get(i);
+                message.append("• ").append(warning.mod).append(" / ").append(warning.key).append("：").append(warning.reason).append("\n");
+            }
+            if(plan.warnings.size() > max) message.append("…另有 ").append(plan.warnings.size() - max).append(" 条警告\n");
+        }
+        if(!plan.rejected.isEmpty()){
+            message.append("\n[scarlet]拒绝项：[]\n");
+            int max = Math.min(10, plan.rejected.size());
+            for(int i = 0; i < max; i++) message.append("• ").append(plan.rejected.get(i)).append("\n");
+            if(plan.rejected.size() > max) message.append("…另有 ").append(plan.rejected.size() - max).append(" 项\n");
+        }
+
+        BaseDialog dialog = new BaseDialog("导入预览");
+        dialog.cont.add(message.toString()).width(760f).left().wrap().pad(8f).row();
+        dialog.buttons.button("取消", Icon.cancel, () -> dialog.hide()).size(180f, 54f);
+        dialog.buttons.button("写入缓存", Icon.ok, () -> {
+            dialog.hide();
+            runGuarded(() -> {
+                int count = service.commitImport(plan);
+                Vars.ui.showInfo("已写入 " + count + " 条 Bridge 翻译缓存。\n请重启游戏以应用。");
+            });
+        }).size(180f, 54f);
+        dialog.show();
+    }
+
+    private void copyPrompt(){
+        Core.app.setClipboardText(MindustryTranslationBridgeMod.LLM_PROMPT);
+        Vars.ui.showInfo("LLM 翻译提示词已复制。");
+    }
+
+    private void showClearCache(){
+        BaseDialog dialog = new BaseDialog("清理翻译缓存");
+        dialog.addCloseButton();
+        dialog.cont.add("仅清理 Translation Bridge 自己的数据，不修改任何其他 Mod 文件。").left().wrap().pad(5f).row();
+        dialog.cont.button("按 Mod 清理", Icon.list, Styles.flatt, () -> {
+            dialog.hide();
+            showClearCacheByMod();
+        }).growX().height(52f).pad(3f).row();
+        dialog.cont.button("清理全部 Bridge 缓存", Icon.trash, Styles.flatt, () -> {
+            dialog.hide();
+            Vars.ui.showConfirm("确认清理全部 Translation Bridge 缓存？\n原 Mod 文件不会被修改。", () -> runGuarded(() -> {
+                int count = service.cache().clearAll();
+                Vars.ui.showInfo("已清理 " + count + " 条 Bridge 缓存。\n请重启游戏以完全恢复原 Mod 本地化。");
+            }));
+        }).growX().height(52f).pad(3f).row();
+        dialog.show();
+    }
