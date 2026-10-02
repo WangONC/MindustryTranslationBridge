@@ -1,0 +1,65 @@
+name: Build Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'ci/BridgeUI.part*'
+      - 'assets/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'mod.hjson'
+      - '.github/workflows/release.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reconstruct BridgeUI
+        shell: bash
+        run: |
+          cat ci/BridgeUI.part00 ci/BridgeUI.part01 ci/BridgeUI.part02 ci/BridgeUI.part03 ci/BridgeUI.part04 ci/BridgeUI.part05 > src/translationbridge/BridgeUI.java
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.4.1'
+
+      - name: Build universal JAR
+        run: gradle --no-daemon clean deploy
+
+      - name: Validate package
+        shell: bash
+        run: |
+          test -f build/libs/MindustryTranslationBridge.jar
+          unzip -t build/libs/MindustryTranslationBridge.jar
+          unzip -l build/libs/MindustryTranslationBridge.jar | grep -q 'classes.dex'
+          unzip -p build/libs/MindustryTranslationBridge.jar mod.hjson | grep -q 'version: "0.4.4"'
+          unzip -p build/libs/MindustryTranslationBridge.jar mod.hjson | grep -q 'main: "translationbridge.MindustryTranslationBridgeMod"'
+
+      - name: Publish v0.4.4
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh release view v0.4.4 >/dev/null 2>&1; then
+            gh release upload v0.4.4 build/libs/MindustryTranslationBridge.jar --clobber
+          else
+            gh release create v0.4.4 build/libs/MindustryTranslationBridge.jar \
+              --title "Mindustry Translation Bridge v0.4.4" \
+              --notes "Mindustry v160.4 universal JAR (Desktop + Android/D8)."
+          fi
