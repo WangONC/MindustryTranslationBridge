@@ -42,6 +42,8 @@ g.show();
             if(next) selected.add(id); else selected.remove(id);
             check.setChecked(next);
             updateSelectedLabel(selectedLabel, scan, selectedMods, selected);
+            // Only the "已选择" filter needs the row list rebuilt immediately.
+            // Other filters keep the current scroll position stable while the user taps several rows.
             if(filter[0] == 7) rebuild.run();
         });
         return row;
