@@ -1,0 +1,165 @@
+package translationbridge;
+
+import arc.Core;
+import arc.graphics.g2d.TextureRegion;
+import arc.scene.Element;
+import arc.scene.event.Touchable;
+import arc.scene.style.Drawable;
+import arc.scene.style.TextureRegionDrawable;
+import arc.scene.ui.CheckBox;
+import arc.scene.ui.Label;
+import arc.scene.ui.ScrollPane;
+import arc.scene.ui.TextButton;
+import arc.scene.ui.TextField;
+import arc.scene.ui.layout.Table;
+import arc.util.Align;
+import mindustry.Vars;
+import mindustry.gen.Icon;
+import mindustry.mod.Mods.LoadedMod;
+import mindustry.ui.FileChooser;
+import mindustry.ui.Styles;
+import mindustry.ui.dialogs.BaseDialog;
+import mindustry.ui.dialogs.LanguageDialog;
+
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.function.IntConsumer;
+
+final class BridgeUI{
+    private static final float BUTTON_H = 52f;
+    private static final int KEY_PAGE_SIZE = 60;
+    private static final int LARGE_CLIPBOARD_BYTES = 200 * 1024;
+    private static final String INCLUDE_DISABLED_KEY = "translation-bridge-include-disabled";
+
+    private static final String[] KEY_FILTER_NAMES = {
+        "全部", "待翻译", "缺失", "疑似未翻译", "过期", "原 Mod 译文", "Bridge 译文", "已选择"
+    };
+
+    private static final String[] EXPORT_PRESET_NAMES = {
+        "待翻译（缺失 + 疑似未翻译 + 过期）",
+        "仅缺失",
+        "仅疑似未翻译",
+        "仅过期",
+        "仅原 Mod 译文",
+        "仅 Bridge 译文",
+        "全部条目",
+        "清空选择"
+    };
+
+    private final TranslationBridgeService service;
+
+    BridgeUI(TranslationBridgeService service){
+        this.service = service;
+    }
+
+    void installSettingsCategory(){
+        Vars.ui.settings.addCategory(BridgeStrings.settingsName(), settingsIcon(), table -> {
+            String locale = BundleScanner.currentLocale();
+            String display = LanguageDialog.getDisplayName(localeObject(locale));
+
+            table.top().left();
+            table.defaults().growX().fillX().minWidth(0f).pad(3f);
+            lockSettingsPaneToVertical(table);
+            table.add("当前语言：[accent]" + display + "[]  [lightgray](" + locale + ")[]")
+                .left().wrap().padBottom(5f);
+            table.row();
+
+            CheckBox includeDisabled = new CheckBox("包含未启用 Mod");
+            includeDisabled.setChecked(includeDisabled());
+            includeDisabled.getLabel().setWrap(true);
+            includeDisabled.changed(() -> Core.settings.put(INCLUDE_DISABLED_KEY, includeDisabled.isChecked()));
+            table.add(includeDisabled).growX().fillX().minWidth(0f).left().height(46f);
+            table.row();
+            table.add("[lightgray]开启后可提前扫描和翻译未启用 Mod；缓存只会在该 Mod 启用并重启后生效。[]")
+                .left().wrap().padBottom(5f);
+            table.row();
+
+            CheckBox translateMetadata = new CheckBox("翻译 Mod 元数据");
+            translateMetadata.setChecked(translateMetadata());
+            translateMetadata.getLabel().setWrap(true);
+            translateMetadata.changed(() -> Core.settings.put(TranslationBridgeService.TRANSLATE_METADATA_KEY, translateMetadata.isChecked()));
+            table.add(translateMetadata).growX().fillX().minWidth(0f).left().height(46f);
+            table.row();
+            table.add("[lightgray]包括 Mod 显示名称、副标题和描述。元数据使用独立缓存覆盖内存值，不修改 Mod 文件；开关变更需重启后完全生效。[]")
+                .left().wrap().padBottom(5f);
+            table.row();
+
+            addButton(table, "查看翻译状态", Icon.infoCircle, this::showStatus);
+            addButton(table, "选择并导出翻译", Icon.list, this::showExportSelection);
+            addButton(table, "导入翻译文件", Icon.fileText, this::chooseImport);
+            addButton(table, "从剪贴板导入 JSON", Icon.edit, this::importFromClipboard);
+            addButton(table, "复制 LLM 翻译提示词", Icon.copy, this::copyPrompt);
+            addButton(table, "清理翻译缓存", Icon.trash, this::showClearCache);
+
+            table.add("[lightgray]大批量翻译建议保存为 JSON 文件；剪贴板更适合小批量。导入成功后请重启游戏。[]")
+                .left().wrap().padTop(5f);
+        });
+    }
+
+    private Drawable settingsIcon(){
+        try{
+            LoadedMod self = Vars.mods.getMod(TranslationBridgeService.OWN_MOD_ID);
+            if(self != null && self.iconTexture != null){
+                return new TextureRegionDrawable(new TextureRegion(self.iconTexture));
+            }
+        }catch(Throwable ignored){
+        }
+        return Icon.fileText;
+    }
+
+    private boolean includeDisabled(){
+        return Core.settings.getBool(INCLUDE_DISABLED_KEY, false);
+    }
+
+    private boolean translateMetadata(){
+        return Core.settings.getBool(TranslationBridgeService.TRANSLATE_METADATA_KEY, true);
+    }
+
+    private Models.ScanResult currentScan(){
+        return service.scan(includeDisabled(), translateMetadata());
+    }
+
+    private void addButton(Table table, String text, Drawable icon, Runnable action){
+        TextButton button = table.button(text, icon, Styles.flatt, action).growX().fillX().minWidth(0f).height(BUTTON_H).get();
+        button.getLabel().setWrap(true);
+        button.getLabel().setAlignment(Align.center);
+        table.row();
+    }
+
+    /** Mindustry's settings dialog wraps custom categories in a two-axis ScrollPane.
+     * This category never needs horizontal scrolling, so lock that ancestor pane to vertical-only. */
+    private void lockSettingsPaneToVertical(Table table){
+        table.update(() -> {
+            Element cursor = table.parent;
+            while(cursor != null){
+                if(cursor instanceof ScrollPane){
+                    ScrollPane pane = (ScrollPane)cursor;
+                    pane.setScrollingDisabled(true, false);
+                    pane.setOverscroll(false, true);
+                    pane.setSmoothScrolling(true);
+                    break;
+                }
+                cursor = cursor.parent;
+            }
+        });
+    }
+
+    void showStartupNoticeIfAny(){
+        String notice = service.cache().consumeStartupNotice();
+        if(notice != null) Vars.ui.showInfo(notice);
+    }
+
+    private void showStatus(){
+        runGuarded(() -> {
+            Models.ScanResult scan = currentScan();
+            BaseDialog dialog = new BaseDialog("翻译状态");
+            dialog.addCloseButton();
+            dialog.cont.defaults().growX();
+            dialog.cont.add("当前语言：[accent]" + scan.locale + "[]  [lightgray]· " +
+                (scan.includesDisabled ? "已启用 + 未启用 Mod" : "仅已启用 Mod") +
+                " · 元数据 " + (scan.includesMetadata ? "开启" : "关闭") + "[]")
+                .left().wrap().pad(4f).row();
+
+            Table list = new Table();
+            list.top().left();
+            lis
