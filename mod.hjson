@@ -1,0 +1,8 @@
+name: "mindustry-translation-bridge"
+displayName: "Mindustry Translation Bridge"
+author: "WangONC"
+main: "translationbridge.MindustryTranslationBridgeMod"
+description: "Translates standard mod bundles and optional mod metadata through offline JSON, using an independent cache without modifying other mods."
+version: "0.4.4"
+minGameVersion: 160
+java: true
