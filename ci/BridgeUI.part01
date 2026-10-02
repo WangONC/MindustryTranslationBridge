@@ -1,0 +1,284 @@
+t.defaults().growX().pad(2f);
+            for(Models.ModStatus mod : scan.mods){
+                TextButton button = new TextButton(statusLine(mod), Styles.flatt);
+                button.getLabel().setWrap(true);
+                button.getLabel().setAlignment(Align.left);
+                button.clicked(() -> showModDetails(mod, scan.locale));
+                list.add(button).growX().height(76f).row();
+            }
+            dialog.cont.add(verticalPane(list)).grow().padTop(3f).row();
+            dialog.show();
+        });
+    }
+
+    private String statusLine(Models.ModStatus mod){
+        String disabled = mod.enabled ? "" : " [orange](未启用)[]";
+        if(mod.error != null){
+            return "! " + mod.displayName + disabled + "\n[lightgray]读取失败：" + safe(mod.error) + "[]";
+        }
+        if(!mod.supported){
+            return "— " + mod.displayName + disabled + "\n[lightgray]无标准 Bundle / 无可翻译元数据[]";
+        }
+        String symbol = mod.expired > 0 ? "!" : ((mod.missing > 0 || mod.suspectUntranslated > 0) ? "△" : "✓");
+        return symbol + " " + mod.displayName + disabled + "\n[lightgray]待处理 " + mod.pending() + " / 总 " + mod.total + "[]";
+    }
+
+    private void showModDetails(Models.ModStatus mod, String locale){
+        StringBuilder text = new StringBuilder();
+        text.append("Mod ID：").append(mod.modId).append('\n');
+        text.append("状态：").append(mod.enabled ? "已启用" : "未启用 / 未加载").append('\n');
+        text.append("目标语言：").append(locale).append("\n\n");
+        if(mod.error != null){
+            text.append("读取失败：").append(mod.error);
+        }else if(!mod.supported){
+            text.append("未找到可翻译的标准 Bundle 或用户可见元数据。");
+        }else{
+            text.append("总条目：").append(mod.total).append('\n');
+            text.append("原 Mod 当前语言译文：").append(mod.official).append('\n');
+            text.append("Bridge 有效缓存：").append(mod.cached).append('\n');
+            text.append("疑似未翻译：").append(mod.suspectUntranslated).append('\n');
+            text.append("当前有效显示：").append(mod.translated()).append(" / ").append(mod.total).append('\n');
+            text.append("缺失：").append(mod.missing).append('\n');
+            text.append("Bridge 过期：").append(mod.expired).append('\n');
+            if(mod.metadataCount > 0) text.append("Mod 元数据条目：").append(mod.metadataCount).append('\n');
+            text.append("\n[lightgray]Bundle 优先级：Bridge 缓存 > 原 Mod 当前语言翻译 > 英文 source。元数据缓存直接覆盖运行时 Mod 元数据。[]");
+            if(!mod.enabled) text.append("\n\n[lightgray]该 Mod 当前未启用；可提前生成缓存，启用并重启后才会应用。[]");
+        }
+        Vars.ui.showText(mod.displayName, text.toString(), Align.left);
+    }
+
+    private void showExportSelection(){
+        runGuarded(() -> {
+            Models.ScanResult scan = currentScan();
+            if(scan.totalKeys() == 0){
+                Vars.ui.showInfo("扫描范围内没有可导出的翻译条目。");
+                return;
+            }
+
+            LinkedHashSet<String> selected = new LinkedHashSet<String>();
+            LinkedHashSet<String> selectedMods = new LinkedHashSet<String>();
+            selectExportMods(scan, selectedMods);
+            selectPending(scan, selected);
+
+            BaseDialog dialog = new BaseDialog("选择并导出翻译");
+            dialog.addCloseButton();
+            dialog.cont.defaults().growX();
+            dialog.cont.add("默认选择全部可翻译 Mod，并按“待翻译（缺失 + 疑似未翻译 + 过期）”预选条目。可先排除不想导出的 Mod，再进入任意 Mod 逐条增减。")
+                .left().wrap().pad(4f).row();
+
+            Label selectedLabel = new Label("");
+            selectedLabel.setAlignment(Align.left);
+            updateSelectedLabel(selectedLabel, scan, selectedMods, selected);
+            dialog.cont.add(selectedLabel).left().pad(3f).row();
+
+            TextField modSearch = new TextField("");
+            modSearch.setMessageText("搜索 Mod 名称 / ID");
+            dialog.cont.add(modSearch).growX().height(48f).pad(3f).row();
+
+            Table modBatch = new Table();
+            modBatch.defaults().growX().height(44f).pad(2f);
+            dialog.cont.add(modBatch).growX().row();
+
+            Table modList = new Table();
+            modList.top().left();
+            ScrollPane pane = verticalPane(modList);
+            dialog.cont.add(pane).grow().pad(2f).row();
+
+            Runnable[] rebuild = new Runnable[1];
+            rebuild[0] = () -> {
+                modList.clear();
+                modList.top().left();
+                modList.defaults().growX().pad(2f);
+                String query = normalizeSearch(modSearch.getText());
+                int shown = 0;
+                for(Models.ModStatus mod : scan.mods){
+                    if(!exportableMod(mod)) continue;
+                    if(!query.isEmpty() && !containsSearch(mod.displayName, query) && !containsSearch(mod.modId, query)) continue;
+                    shown++;
+
+                    Table row = new Table(Styles.grayPanel);
+                    row.left();
+                    CheckBox include = new CheckBox("");
+                    include.setChecked(selectedMods.contains(mod.modId));
+                    include.changed(() -> {
+                        if(include.isChecked()) selectedMods.add(mod.modId);
+                        else selectedMods.remove(mod.modId);
+                        updateSelectedLabel(selectedLabel, scan, selectedMods, selected);
+                    });
+                    row.add(include).width(44f).height(68f).left();
+
+                    String suffix = mod.enabled ? "" : "  [orange](未启用)[]";
+                    String line = mod.displayName + suffix + "\n[lightgray]待处理 " + mod.pending() + " · 总 " + mod.total + " · 点击选择条目[]";
+                    TextButton button = new TextButton(line, Styles.flatt);
+                    button.getLabel().setWrap(true);
+                    button.getLabel().setAlignment(Align.left);
+                    button.clicked(() -> showKeyPicker(scan, mod, selectedMods, selected, selectedLabel));
+                    row.add(button).growX().height(68f);
+                    modList.add(row).growX().row();
+                }
+                if(shown == 0) modList.add("[lightgray]没有匹配的 Mod。[]").left().wrap().pad(8f).row();
+                pane.setScrollYForce(0f);
+            };
+
+            modBatch.button("全选 Mod", Icon.ok, Styles.flatt, () -> {
+                selectExportMods(scan, selectedMods);
+                updateSelectedLabel(selectedLabel, scan, selectedMods, selected);
+                rebuild[0].run();
+            });
+            modBatch.button("清空 Mod", Icon.cancel, Styles.flatt, () -> {
+                selectedMods.clear();
+                updateSelectedLabel(selectedLabel, scan, selectedMods, selected);
+                rebuild[0].run();
+            });
+
+            modSearch.changed(rebuild[0]);
+            rebuild[0].run();
+
+            final int[] exportPreset = {0};
+            TextButton presetButton = new TextButton("", Styles.flatt);
+            presetButton.getLabel().setWrap(true);
+            presetButton.getLabel().setAlignment(Align.left);
+            Runnable updatePresetText = () -> presetButton.setText("批量选择范围：" + EXPORT_PRESET_NAMES[exportPreset[0]] + "  ▾");
+            presetButton.clicked(() -> showExportPresetChooser(exportPreset[0], choice -> {
+                exportPreset[0] = choice;
+                selected.clear();
+                applyExportPreset(scan, selected, choice);
+                updateSelectedLabel(selectedLabel, scan, selectedMods, selected);
+                updatePresetText.run();
+            }));
+            updatePresetText.run();
+            dialog.cont.add(presetButton).growX().fillX().height(48f).pad(2f).row();
+
+            Table export = new Table();
+            export.defaults().growX().height(48f).pad(2f);
+            export.button("保存 JSON", Icon.save, Styles.flatt, () -> {
+                String json = selectedJson(scan, selectedMods, selected);
+                if(json == null) return;
+                dialog.hide();
+                exportJsonToFile(scan, json);
+            });
+            export.button("复制 JSON", Icon.copy, Styles.flatt, () -> {
+                String json = selectedJson(scan, selectedMods, selected);
+                if(json == null) return;
+                copyJson(json, dialog::hide);
+            });
+            dialog.cont.add(export).growX().padBottom(2f).row();
+            dialog.show();
+        });
+    }
+
+    private void showKeyPicker(Models.ScanResult scan, Models.ModStatus mod, Set<String> selectedMods,
+                               Set<String> selected, Label selectedLabel){
+        BaseDialog dialog = new BaseDialog(mod.displayName);
+        dialog.addCloseButton();
+        dialog.cont.defaults().growX();
+        dialog.cont.add("搜索并逐条选择。已有译文会保留在 translation 中，便于直接校对和修正。")
+            .left().wrap().pad(4f).row();
+        dialog.cont.add(selectedMods.contains(mod.modId)
+                ? "当前 Mod：[accent]参与导出[]"
+                : "当前 Mod：[orange]已从本次导出中排除[]；此处条目勾选会保留，重新勾选 Mod 后恢复。")
+            .left().wrap().pad(4f).row();
+
+        TextField search = new TextField("");
+        search.setMessageText("搜索 key / 原文 / 当前译文");
+        dialog.cont.add(search).growX().height(48f).pad(3f).row();
+
+        final int[] filter = {0};
+        final int[] page = {0};
+        final List<Models.KeyStatus> filtered = new ArrayList<Models.KeyStatus>();
+
+        TextButton filterButton = new TextButton("", Styles.flatt);
+        filterButton.getLabel().setWrap(true);
+        filterButton.getLabel().setAlignment(Align.left);
+        Label pageLabel = new Label("");
+        pageLabel.setAlignment(Align.left);
+
+        Table filterRow = new Table();
+        filterRow.defaults().height(44f).pad(2f);
+        filterRow.add(filterButton).growX();
+        filterRow.button(Icon.cancel, 42f, () -> search.setText(""));
+        dialog.cont.add(filterRow).growX().row();
+        dialog.cont.add(pageLabel).left().wrap().pad(3f).row();
+
+        final Table list = new Table();
+        list.top().left();
+        ScrollPane pane = verticalPane(list);
+        dialog.cont.add(pane).grow().pad(2f).row();
+
+        Runnable[] rebuild = new Runnable[1];
+        rebuild[0] = () -> {
+            filtered.clear();
+            String query = normalizeSearch(search.getText());
+            for(Models.KeyStatus key : mod.keys){
+                if(!matchesFilter(key, filter[0], selected, mod.modId)) continue;
+                if(!matchesSearch(key, query)) continue;
+                filtered.add(key);
+            }
+
+            int pages = Math.max(1, (filtered.size() + KEY_PAGE_SIZE - 1) / KEY_PAGE_SIZE);
+            if(page[0] >= pages) page[0] = pages - 1;
+            if(page[0] < 0) page[0] = 0;
+
+            filterButton.setText("筛选：" + KEY_FILTER_NAMES[filter[0]] + "  ▾");
+            int start = filtered.isEmpty() ? 0 : page[0] * KEY_PAGE_SIZE;
+            int end = Math.min(filtered.size(), start + KEY_PAGE_SIZE);
+            pageLabel.setText("匹配 [accent]" + filtered.size() + "[] 条 · 本 Mod 已选 " + countSelectedEntries(mod, selected) + " · 第 " + (page[0] + 1) + "/" + pages + " 页" +
+                (filtered.isEmpty() ? "" : " · " + (start + 1) + "–" + end));
+
+            list.clear();
+            list.top().left();
+            list.defaults().growX().pad(2f);
+            if(filtered.isEmpty()){
+                list.add("[lightgray]没有匹配条目。[]").left().wrap().pad(10f).row();
+            }else{
+                for(int i = start; i < end; i++){
+                    Models.KeyStatus key = filtered.get(i);
+                    list.add(keyRow(scan, mod, key, selectedMods, selected, selectedLabel, filter, rebuild[0])).growX().row();
+                }
+            }
+            pane.setScrollYForce(0f);
+        };
+
+        filterButton.clicked(() -> showKeyFilterChooser(filter[0], choice -> {
+            filter[0] = choice;
+            page[0] = 0;
+            rebuild[0].run();
+        }));
+        search.changed(() -> {
+            page[0] = 0;
+            rebuild[0].run();
+        });
+
+        Table batch = new Table();
+        batch.defaults().growX().height(46f).pad(2f);
+        batch.button("选中结果", Icon.ok, Styles.flatt, () -> {
+            for(Models.KeyStatus key : filtered) selected.add(key.identity(mod.modId));
+            updateSelectedLabel(selectedLabel, scan, selectedMods, selected);
+            rebuild[0].run();
+        });
+        batch.button("取消结果", Icon.cancel, Styles.flatt, () -> {
+            for(Models.KeyStatus key : filtered) selected.remove(key.identity(mod.modId));
+            updateSelectedLabel(selectedLabel, scan, selectedMods, selected);
+            rebuild[0].run();
+        });
+        dialog.cont.add(batch).growX().row();
+
+        Table nav = new Table();
+        nav.defaults().height(46f).pad(2f);
+        nav.button("上一页", Icon.leftOpen, Styles.flatt, () -> {
+            if(page[0] > 0){
+                page[0]--;
+                rebuild[0].run();
+            }
+        }).growX();
+        nav.button("下一页", Icon.rightOpen, Styles.flatt, () -> {
+            int pages = Math.max(1, (filtered.size() + KEY_PAGE_SIZE - 1) / KEY_PAGE_SIZE);
+            if(page[0] + 1 < pages){
+                page[0]++;
+                rebuild[0].run();
+            }
+        }).growX();
+        dialog.cont.add(nav).growX().padBottom(2f).row();
+
+        rebuild[0].run();
+        dialo
