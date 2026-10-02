@@ -1,0 +1,107 @@
+apply plugin: "java"
+
+sourceSets.main.java.srcDirs = ["src"]
+sourceSets.test.java.srcDirs = ["tests"]
+
+ext{
+    mindustryVersion = "v160.4"
+    isWindows = System.getProperty("os.name").toLowerCase().contains("windows")
+    sdkRoot = System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
+}
+
+repositories{
+    mavenCentral()
+    ivy{
+        url = 'https://github.com/'
+        patternLayout{ artifact(
+            mindustryVersion == "latest" ? '/[organisation]/[module]/releases/latest/download/dependencies.jar' :
+            mindustryVersion == "be" ? '/[organisation]/[module]/releases/download/master/[revision].jar' :
+            '/[organisation]/[module]/releases/download/[revision]/dependencies.jar'
+        )}
+        metadataSources{ artifact() }
+        content{
+            if(mindustryVersion == "be") includeVersion("Anuken", "MindustryBuilds", "latest")
+            else includeVersion("Anuken", "Mindustry", mindustryVersion)
+        }
+    }
+}
+
+java{
+    targetCompatibility = JavaVersion.VERSION_17
+    sourceCompatibility = JavaVersion.VERSION_17
+}
+
+tasks.withType(JavaCompile).configureEach{
+    options.encoding = "UTF-8"
+    options.release = 17
+}
+
+dependencies{
+    def mindustryDependency = mindustryVersion == "be" ? "Anuken:MindustryBuilds:latest" : "Anuken:Mindustry:$mindustryVersion"
+    compileOnly mindustryDependency
+    testImplementation mindustryDependency
+}
+
+tasks.register('jarAndroid'){
+    dependsOn "jar"
+    def projectName = project.name
+    doLast{
+        if(!sdkRoot || !new File(sdkRoot).exists()) throw new GradleException("No valid Android SDK found. Set ANDROID_HOME or ANDROID_SDK_ROOT.")
+        def platformsDir = new File(sdkRoot, "platforms")
+        def platforms = (platformsDir.listFiles()?.findAll{ new File(it, "android.jar").exists() } ?: [])
+        platforms.sort{ a, b -> b.name <=> a.name }
+        def platformRoot = platforms.isEmpty() ? null : platforms[0]
+        if(!platformRoot) throw new GradleException("No android.jar found in the Android SDK.")
+
+        def buildToolsDir = new File(sdkRoot, "build-tools")
+        def d8Name = isWindows ? "d8.bat" : "d8"
+        def buildTools = (buildToolsDir.listFiles()?.findAll{ new File(it, d8Name).exists() } ?: [])
+        buildTools.sort{ a, b -> b.name <=> a.name }
+        def d8File = buildTools.isEmpty() ? null : new File(buildTools[0], d8Name)
+        def d8 = d8File != null ? d8File.absolutePath : d8Name
+
+        def command = [d8]
+        (configurations.compileClasspath.asList() + configurations.runtimeClasspath.asList() + [new File(platformRoot, "android.jar")]).each{
+            command += ["--classpath", it.absolutePath]
+        }
+        command += ["--release", "--min-api", "21", "--output", "${projectName}Android.jar".toString(), "${projectName}Desktop.jar".toString()]
+
+        def proc = new ProcessBuilder(command).directory(new File("build/libs")).inheritIO().start()
+        if(proc.waitFor() != 0) throw new GradleException("D8 failed with exit code ${proc.exitValue()}")
+    }
+}
+
+jar{
+    archiveFileName = "${project.name}Desktop.jar"
+    from{ configurations.runtimeClasspath.collect{ it.isDirectory() ? it : zipTree(it) } }
+    from(projectDir){ include "mod.hjson" }
+    from("assets/"){ include "**" }
+}
+
+tasks.register('deploy', Jar){
+    def projectName = project.name
+    dependsOn jarAndroid
+    dependsOn jar
+    archiveFileName = "${projectName}.jar"
+    from{ [zipTree("build/libs/${projectName}Desktop.jar"), zipTree("build/libs/${projectName}Android.jar")] }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    doLast{ delete "build/libs/${projectName}Android.jar" }
+}
+
+tasks.register('coreTest', JavaExec){
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath + configurations.compileClasspath
+    mainClass = 'translationbridge.TranslationCoreTest'
+}
+
+tasks.register('integrationTest', JavaExec){
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath + configurations.compileClasspath
+    mainClass = 'translationbridge.IntegrationTest'
+}
+
+tasks.named('test', Test){
+    enabled = false
+}
+
+check.dependsOn coreTest, integrationTest
