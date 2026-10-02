@@ -1,0 +1,111 @@
+     for(Models.ImportWarning warning : plan.warnings){
+            if(shown++ >= 80){
+                text.append("\n……其余 ").append(plan.warnings.size() - 80).append(" 条省略");
+                break;
+            }
+            text.append(warning.mod).append(" / ").append(warning.key).append("\n  - ").append(warning.reason).append("\n\n");
+        }
+        Vars.ui.showText("可能损坏的翻译", text.toString(), Align.left);
+    }
+
+    private void showImportSummary(Models.ImportPlan plan, int imported, boolean saved){
+        StringBuilder text = new StringBuilder();
+        text.append("已写入缓存：").append(imported).append('\n');
+        text.append("空 translation 忽略：").append(plan.emptyIgnored).append('\n');
+        text.append("重复项忽略：").append(plan.duplicateIgnored).append('\n');
+        text.append("无效/过期项拒绝：").append(plan.rejected.size()).append('\n');
+        if(saved && imported > 0) text.append("\n[accent]请重启游戏使新翻译生效。未启用 Mod 的缓存会在以后启用并重启时生效。[]");
+        if(!plan.rejected.isEmpty()){
+            text.append("\n\n[lightgray]部分拒绝原因：[]\n");
+            int limit = Math.min(12, plan.rejected.size());
+            for(int i = 0; i < limit; i++) text.append("• ").append(plan.rejected.get(i)).append('\n');
+            if(plan.rejected.size() > limit) text.append("……另有 ").append(plan.rejected.size() - limit).append(" 项");
+        }
+        Vars.ui.showText("导入结果", text.toString(), Align.left);
+    }
+
+    private void copyPrompt(){
+        try{
+            Core.app.setClipboardText(MindustryTranslationBridgeMod.LLM_PROMPT);
+            Vars.ui.showInfo("LLM 翻译提示词已复制到剪贴板。");
+        }catch(Throwable e){
+            Vars.ui.showErrorMessage("复制失败：" + finalMessage(e));
+        }
+    }
+
+    private void showClearCache(){
+        runGuarded(() -> {
+            Set<String> ids = service.cache().modIds();
+            BaseDialog dialog = new BaseDialog("清理翻译缓存");
+            dialog.addCloseButton();
+            dialog.cont.defaults().growX();
+            dialog.cont.button("清除全部翻译", Icon.trash, Styles.flatt, () -> {
+                Vars.ui.showConfirm("确认清除", "确定清除 Translation Bridge 的全部翻译缓存吗？此操作不会修改任何其他 Mod。", () -> runGuarded(() -> {
+                    int count = service.cache().clearAll();
+                    dialog.hide();
+                    Vars.ui.showInfo("已清除 " + count + " 条缓存翻译。重启后生效。");
+                }));
+            }).growX().height(52f).padBottom(5f).row();
+
+            if(ids.isEmpty()){
+                dialog.cont.add("[lightgray]当前没有缓存翻译。[]").left().wrap().pad(10f);
+            }else{
+                Table list = new Table();
+                list.top().left();
+                list.defaults().growX().pad(2f);
+                for(String id : ids){
+                    LoadedMod mod = Vars.mods.getMod(id);
+                    String name = mod == null ? id + " [lightgray](未安装)[]" : (mod.meta.displayName == null ? id : mod.meta.displayName);
+                    TextButton button = new TextButton(name + "  [scarlet][清除][]", Styles.flatt);
+                    button.getLabel().setWrap(true);
+                    button.getLabel().setAlignment(Align.left);
+                    button.clicked(() -> Vars.ui.showConfirm("确认清除", "确定清除 " + id + " 的全部语言缓存吗？", () -> runGuarded(() -> {
+                        int count = service.cache().clearMod(id);
+                        dialog.hide();
+                        Vars.ui.showInfo("已清除 " + count + " 条缓存翻译。重启后生效。");
+                    })));
+                    list.add(button).growX().height(52f).row();
+                }
+                dialog.cont.add(verticalPane(list)).grow().row();
+            }
+            dialog.show();
+        });
+    }
+
+    private void runGuarded(Runnable runnable){
+        try{
+            runnable.run();
+        }catch(Throwable e){
+            Vars.ui.showErrorMessage("Translation Bridge 操作失败：\n" + finalMessage(e));
+        }
+    }
+
+    private static Locale localeObject(String id){
+        String normalized = id == null ? "en" : id.replace('-', '_');
+        String[] parts = normalized.split("_", -1);
+        if(parts.length >= 3) return new Locale(parts[0], parts[1], parts[2]);
+        if(parts.length == 2) return new Locale(parts[0], parts[1]);
+        return new Locale(normalized);
+    }
+
+    private static String preview(String text){
+        if(text == null) return "";
+        String flat = text.replace("\r", "").replace("\n", "\\n");
+        return flat.length() <= 120 ? flat : flat.substring(0, 117) + "...";
+    }
+
+    private static String safeMarkup(String text){
+        return text == null ? "" : text.replace("[", "[[");
+    }
+
+    private static String safe(String text){
+        return text == null ? "未知错误" : safeMarkup(text);
+    }
+
+    private static String finalMessage(Throwable e){
+        Throwable t = e;
+        while(t.getCause() != null) t = t.getCause();
+        String message = t.getMessage();
+        return message == null || message.trim().isEmpty() ? t.getClass().getSimpleName() : message;
+    }
+}
