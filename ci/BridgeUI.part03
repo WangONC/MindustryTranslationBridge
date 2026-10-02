@@ -1,0 +1,158 @@
+g.show();
+    }
+
+    private Table keyRow(Models.ScanResult scan, Models.ModStatus mod, Models.KeyStatus key, Set<String> selectedMods,
+                         Set<String> selected, Label selectedLabel, int[] filter, Runnable rebuild){
+        String id = key.identity(mod.modId);
+        Table row = new Table(Styles.grayPanel);
+        row.left().top();
+        row.defaults().pad(4f);
+
+        CheckBox check = new CheckBox("");
+        check.setChecked(selected.contains(id));
+        check.touchable = Touchable.disabled;
+        row.add(check).width(38f).top();
+
+        Table text = new Table();
+        text.left().top();
+        text.defaults().growX().left();
+
+        String keyName = key.metadata ? TranslationBridgeService.metadataLabel(key.key) + "  [lightgray](" + safeMarkup(key.key) + ")[]" : safeMarkup(key.key);
+        Label title = new Label(keyStateLabel(key) + "  " + keyName);
+        title.setWrap(true);
+        title.setAlignment(Align.left);
+        text.add(title).growX().left().row();
+
+        Label source = new Label("[lightgray]原文：" + safeMarkup(preview(key.source)) + "[]");
+        source.setWrap(true);
+        source.setAlignment(Align.left);
+        text.add(source).growX().left().padTop(2f).row();
+
+        String translation = keyTranslationPreview(key);
+        if(!translation.isEmpty()){
+            Label current = new Label(translation);
+            current.setWrap(true);
+            current.setAlignment(Align.left);
+            text.add(current).growX().left().padTop(2f).row();
+        }
+
+        row.add(text).growX().left().top();
+        row.clicked(() -> {
+            boolean next = !selected.contains(id);
+            if(next) selected.add(id); else selected.remove(id);
+            check.setChecked(next);
+            updateSelectedLabel(selectedLabel, scan, selectedMods, selected);
+            if(filter[0] == 7) rebuild.run();
+        });
+        return row;
+    }
+
+    private String keyStateLabel(Models.KeyStatus key){
+        switch(key.state){
+            case cacheValid: return "[accent]Bridge[]";
+            case official: return "[green]原译[]";
+            case suspectUntranslated: return "[orange]疑似未译[]";
+            case missing: return "[scarlet]缺失[]";
+            case expired: return "[orange]Bridge 过期[]";
+            default: return "?";
+        }
+    }
+
+    private String keyTranslationPreview(Models.KeyStatus key){
+        if(key.state == Models.KeyState.suspectUntranslated && TranslationCore.nonEmpty(key.nativeTranslation)){
+            return "[lightgray]当前（与原文相同）：" + safeMarkup(preview(key.nativeTranslation)) + "[]";
+        }
+        if(key.effectiveTranslated()){
+            return "[lightgray]当前：" + safeMarkup(preview(key.currentTranslation)) + "[]";
+        }
+        if(key.state == Models.KeyState.expired && TranslationCore.nonEmpty(key.cachedTranslation)){
+            return "[lightgray]旧 Bridge：" + safeMarkup(preview(key.cachedTranslation)) + "[]";
+        }
+        return "";
+    }
+
+    private boolean matchesSearch(Models.KeyStatus key, String query){
+        if(query.isEmpty()) return true;
+        return containsSearch(key.key, query) || containsSearch(key.source, query) ||
+            containsSearch(key.currentTranslation, query) || containsSearch(key.nativeTranslation, query) ||
+            containsSearch(key.cachedTranslation, query);
+    }
+
+    private boolean matchesFilter(Models.KeyStatus key, int filter, Set<String> selected, String modId){
+        switch(filter){
+            case 1: return key.pending();
+            case 2: return key.state == Models.KeyState.missing;
+            case 3: return key.state == Models.KeyState.suspectUntranslated;
+            case 4: return key.state == Models.KeyState.expired;
+            case 5: return key.state == Models.KeyState.official;
+            case 6: return key.state == Models.KeyState.cacheValid;
+            case 7: return selected.contains(key.identity(modId));
+            default: return true;
+        }
+    }
+
+    private static String normalizeSearch(String text){
+        return text == null ? "" : text.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private static boolean containsSearch(String text, String normalizedQuery){
+        return text != null && text.toLowerCase(Locale.ROOT).contains(normalizedQuery);
+    }
+
+    private ScrollPane verticalPane(Element content){
+        ScrollPane pane = new ScrollPane(content, Styles.smallPane);
+        pane.setScrollingDisabled(true, false);
+        pane.setFadeScrollBars(false);
+        pane.setOverscroll(false, true);
+        pane.setSmoothScrolling(true);
+        return pane;
+    }
+
+    private void selectPending(Models.ScanResult scan, Set<String> selected){
+        applyExportPreset(scan, selected, 0);
+    }
+
+    private void applyExportPreset(Models.ScanResult scan, Set<String> selected, int preset){
+        if(preset == 7) return;
+        for(Models.ModStatus mod : scan.mods){
+            if(!mod.supported || mod.error != null) continue;
+            for(Models.KeyStatus key : mod.keys){
+                boolean choose;
+                switch(preset){
+                    case 1:
+                        choose = key.state == Models.KeyState.missing;
+                        break;
+                    case 2:
+                        choose = key.state == Models.KeyState.suspectUntranslated;
+                        break;
+                    case 3:
+                        choose = key.state == Models.KeyState.expired;
+                        break;
+                    case 4:
+                        choose = key.state == Models.KeyState.official;
+                        break;
+                    case 5:
+                        choose = key.state == Models.KeyState.cacheValid;
+                        break;
+                    case 6:
+                        choose = true;
+                        break;
+                    default:
+                        choose = key.pending();
+                        break;
+                }
+                if(choose) selected.add(key.identity(mod.modId));
+            }
+        }
+    }
+
+    private void showExportPresetChooser(int current, IntConsumer selected){
+        BaseDialog chooser = new BaseDialog("批量选择范围");
+        chooser.addCloseButton();
+        chooser.cont.defaults().growX().fillX().pad(2f);
+        chooser.cont.add("选择后会替换当前全部勾选；之后仍可进入 Mod 逐条增减。").left().wrap().pad(4f).row();
+        for(int i = 0; i < EXPORT_PRESET_NAMES.length; i++){
+            final int index = i;
+            String prefix = i == current ? "[accent]✓ []" : "";
+            TextButton button = new TextButton(prefix + EXPORT_PRESET_NAMES[i], Styles.flatt);
+            button.getLabel().setWrap(true);
