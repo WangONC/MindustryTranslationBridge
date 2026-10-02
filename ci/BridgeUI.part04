@@ -1,0 +1,175 @@
+           button.getLabel().setAlignment(Align.left);
+            button.clicked(() -> {
+                chooser.hide();
+                selected.accept(index);
+            });
+            chooser.cont.add(button).growX().fillX().height(48f).row();
+        }
+        chooser.show();
+    }
+
+    private void showKeyFilterChooser(int current, IntConsumer selected){
+        BaseDialog chooser = new BaseDialog("筛选条目");
+        chooser.addCloseButton();
+        chooser.cont.defaults().growX().fillX().pad(2f);
+        for(int i = 0; i < KEY_FILTER_NAMES.length; i++){
+            final int index = i;
+            String prefix = i == current ? "[accent]✓ []" : "";
+            TextButton button = new TextButton(prefix + KEY_FILTER_NAMES[i], Styles.flatt);
+            button.getLabel().setAlignment(Align.left);
+            button.clicked(() -> {
+                chooser.hide();
+                selected.accept(index);
+            });
+            chooser.cont.add(button).growX().fillX().height(46f).row();
+        }
+        chooser.show();
+    }
+
+    private static boolean exportableMod(Models.ModStatus mod){
+        return mod != null && mod.supported && mod.error == null && mod.total > 0;
+    }
+
+    private void selectExportMods(Models.ScanResult scan, Set<String> selectedMods){
+        selectedMods.clear();
+        for(Models.ModStatus mod : scan.mods){
+            if(exportableMod(mod)) selectedMods.add(mod.modId);
+        }
+    }
+
+    private int exportableModCount(Models.ScanResult scan){
+        int count = 0;
+        for(Models.ModStatus mod : scan.mods) if(exportableMod(mod)) count++;
+        return count;
+    }
+
+    private int countSelectedEntries(Models.ModStatus mod, Set<String> selected){
+        int count = 0;
+        for(Models.KeyStatus key : mod.keys){
+            if(selected.contains(key.identity(mod.modId))) count++;
+        }
+        return count;
+    }
+
+    private int countExportEntries(Models.ScanResult scan, Set<String> selectedMods, Set<String> selected){
+        int count = 0;
+        for(Models.ModStatus mod : scan.mods){
+            if(!exportableMod(mod) || !selectedMods.contains(mod.modId)) continue;
+            count += countSelectedEntries(mod, selected);
+        }
+        return count;
+    }
+
+    private void updateSelectedLabel(Label label, Models.ScanResult scan, Set<String> selectedMods, Set<String> selected){
+        int modCount = 0;
+        for(Models.ModStatus mod : scan.mods){
+            if(exportableMod(mod) && selectedMods.contains(mod.modId)) modCount++;
+        }
+        int entries = countExportEntries(scan, selectedMods, selected);
+        label.setText("已选 Mod：[accent]" + modCount + "[] / " + exportableModCount(scan) +
+            " · 导出条目：[accent]" + entries + "[] / " + scan.totalKeys());
+    }
+
+    private String selectedJson(Models.ScanResult scan, Set<String> selectedMods, Set<String> selected){
+        if(selectedMods.isEmpty()){
+            Vars.ui.showInfo("至少选择一个要导出的 Mod。");
+            return null;
+        }
+        if(countExportEntries(scan, selectedMods, selected) == 0){
+            Vars.ui.showInfo("所选 Mod 中至少选择一条翻译条目。");
+            return null;
+        }
+        return service.exportSelectedEntries(scan, selectedMods, selected);
+    }
+
+    private void exportJsonToFile(Models.ScanResult scan, String json){
+        String fileName = "mindustry-translation-" + scan.locale;
+        try{
+            FileChooser.export(fileName, "json", file -> file.writeString(json, false, "UTF-8"));
+        }catch(Throwable e){
+            Vars.ui.showErrorMessage("无法打开文件保存器：" + finalMessage(e) + "\n可改用“复制 JSON”。");
+        }
+    }
+
+    private void copyJson(String json, Runnable onCopied){
+        int bytes = json.getBytes(StandardCharsets.UTF_8).length;
+        if(bytes > LARGE_CLIPBOARD_BYTES){
+            int kib = (bytes + 1023) / 1024;
+            Vars.ui.showConfirm("JSON 内容较大",
+                "当前 JSON 约 " + kib + " KiB。部分 Android 剪贴板、输入框或应用可能截断长文本。\n\n" +
+                "大批量翻译建议使用“保存 JSON”文件流程。仍然复制到剪贴板？",
+                () -> { if(copyJsonNow(json)) onCopied.run(); });
+            return;
+        }
+        if(copyJsonNow(json)) onCopied.run();
+    }
+
+    private boolean copyJsonNow(String json){
+        try{
+            Core.app.setClipboardText(json);
+            Vars.ui.showInfo("翻译 JSON 已复制到剪贴板。");
+            return true;
+        }catch(Throwable e){
+            Vars.ui.showErrorMessage("复制 JSON 失败：" + finalMessage(e));
+            return false;
+        }
+    }
+
+    private void chooseImport(){
+        try{
+            FileChooser.open("json").title("导入翻译 JSON").submit(file -> runGuarded(() -> handleImport(file)));
+        }catch(Throwable e){
+            Vars.ui.showErrorMessage("无法打开文件选择器：" + finalMessage(e) + "\n可改用“从剪贴板导入 JSON”。");
+        }
+    }
+
+    private void importFromClipboard(){
+        runGuarded(() -> {
+            String text = Core.app.getClipboardText();
+            if(text == null || text.trim().isEmpty()){
+                Vars.ui.showInfo("剪贴板中没有文本。");
+                return;
+            }
+            handleImportPlan(service.parseImportText(text));
+        });
+    }
+
+    private void handleImport(arc.files.Fi file){
+        handleImportPlan(service.parseImport(file));
+    }
+
+    private void handleImportPlan(Models.ImportPlan plan){
+        if(plan.accepted.isEmpty()){
+            showImportSummary(plan, 0, false);
+            return;
+        }
+        if(plan.hasWarnings()){
+            showImportWarnings(plan);
+        }else{
+            int imported = service.commitImport(plan);
+            showImportSummary(plan, imported, true);
+        }
+    }
+
+    private void showImportWarnings(Models.ImportPlan plan){
+        BaseDialog dialog = new BaseDialog("翻译格式检查");
+        dialog.cont.defaults().growX();
+        dialog.cont.add("[scarlet]发现 " + plan.warningEntryCount() + " 条可能损坏的翻译[]")
+            .wrap().left().pad(5f).row();
+        dialog.cont.add("这些是轻量兜底检查，不会自动判定译文质量。")
+            .wrap().left().pad(5f).row();
+        dialog.buttons.button("查看", () -> showWarningDetails(plan)).growX().height(50f);
+        dialog.buttons.button("仍然导入", () -> {
+            dialog.hide();
+            runGuarded(() -> {
+                int imported = service.commitImport(plan);
+                showImportSummary(plan, imported, true);
+            });
+        }).growX().height(50f);
+        dialog.buttons.button("取消", dialog::hide).growX().height(50f);
+        dialog.show();
+    }
+
+    private void showWarningDetails(Models.ImportPlan plan){
+        StringBuilder text = new StringBuilder();
+        int shown = 0;
