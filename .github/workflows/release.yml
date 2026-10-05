@@ -1,5 +1,5 @@
 name: Build Release
-# v0.4.4 import release
+# v0.4.5 HJSON direct-source fallback
 
 on:
   workflow_dispatch:
@@ -49,18 +49,18 @@ jobs:
           test -f build/libs/MindustryTranslationBridge.jar
           unzip -t build/libs/MindustryTranslationBridge.jar
           unzip -l build/libs/MindustryTranslationBridge.jar | grep -q 'classes.dex'
-          unzip -p build/libs/MindustryTranslationBridge.jar mod.hjson | grep -q 'version: "0.4.4"'
+          unzip -p build/libs/MindustryTranslationBridge.jar mod.hjson | grep -q 'version: "0.4.5"'
           unzip -p build/libs/MindustryTranslationBridge.jar mod.hjson | grep -q 'main: "translationbridge.MindustryTranslationBridgeMod"'
 
-      - name: Publish v0.4.4
+      - name: Publish v0.4.5
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          if gh release view v0.4.4 >/dev/null 2>&1; then
-            gh release upload v0.4.4 build/libs/MindustryTranslationBridge.jar --clobber
+          if gh release view v0.4.5 >/dev/null 2>&1; then
+            gh release upload v0.4.5 build/libs/MindustryTranslationBridge.jar --clobber
           else
-            gh release create v0.4.4 build/libs/MindustryTranslationBridge.jar \
-              --title "Mindustry Translation Bridge v0.4.4" \
-              --notes "Mindustry v160.4 universal JAR (Desktop + Android/D8)."
+            gh release create v0.4.5 build/libs/MindustryTranslationBridge.jar \
+              --title "Mindustry Translation Bridge v0.4.5" \
+              --notes "Adds direct fallback scanning for official Mindustry HJSON/JSON inline name/description fields, including bundle-less content mods. Mindustry v160.4 universal JAR (Desktop + Android/D8)."
           fi
