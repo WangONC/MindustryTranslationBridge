@@ -6,6 +6,7 @@ import arc.struct.ObjectMap;
 import arc.util.I18NBundle;
 import arc.util.Log;
 import arc.util.io.PropertiesUtils;
+import arc.util.serialization.Jval;
 import mindustry.Vars;
 import mindustry.ctype.ContentType;
 import mindustry.mod.Mods.LoadedMod;
@@ -104,20 +105,30 @@ final class BundleScanner{
 
     Map<String, String> readSource(LoadedMod mod){
         LinkedHashMap<String, String> out = new LinkedHashMap<String, String>();
+
+        // 1) Explicit root/source bundle is authoritative when the mod provides one.
         Fi bundles = mod.root.child("bundles");
         Fi source = bundles.child("bundle.properties");
         if(source.exists() && !source.isDirectory()) out.putAll(readProperties(source));
 
-        Map<String, String> runtimeSource = readRuntimeSourceProperties();
-        if(runtimeSource.isEmpty()) return out;
+        // 2) Official Mindustry HJSON/JSON inline localization fallback.
+        // ContentParser.readBundle() treats top-level "name" and "description" as localization
+        // source text. Read those files directly so bundle-less mods do not depend on runtime
+        // bundle timing/snapshots.
+        readInlineContentSource(mod, out);
 
+        // 3) Runtime source snapshot covers generated/late-bound standard content keys.
+        Map<String, String> runtimeSource = readRuntimeSourceProperties();
         for(Map.Entry<String, String> entry : runtimeSource.entrySet()){
             if(!out.containsKey(entry.getKey()) && isStandardContentKeyForMod(entry.getKey(), mod.name)){
                 out.put(entry.getKey(), entry.getValue());
             }
         }
 
-        if(bundles.exists() && bundles.isDirectory()){
+        // 4) Locale bundles may contain keys omitted by bundle.properties. Only accept those keys
+        // when the root runtime source has a non-empty English/source value; never treat a foreign
+        // locale string as source text.
+        if(!runtimeSource.isEmpty() && bundles.exists() && bundles.isDirectory()){
             for(Fi file : bundles.list()){
                 String name = file.name();
                 if(file.isDirectory() || !name.startsWith("bundle_") || !name.endsWith(".properties")) continue;
@@ -130,6 +141,66 @@ final class BundleScanner{
             }
         }
         return out;
+    }
+
+    private void readInlineContentSource(LoadedMod mod, Map<String, String> out){
+        Fi contentRoot = mod.root.child("content");
+        if(!contentRoot.exists() || !contentRoot.isDirectory()) return;
+
+        HashSet<String> visited = new HashSet<String>();
+
+        for(ContentType type : ContentType.all){
+            if(type.contentClass == null) continue;
+
+            // Accept both current folder names and historical/singular aliases used by mods.
+            // Files that Mindustry actually loads will resolve to the same content key below.
+            LinkedHashSet<String> folderNames = new LinkedHashSet<String>();
+            String typeName = type.name().toLowerCase(Locale.ROOT);
+            folderNames.add(type.folderName);
+            folderNames.add(typeName);
+            folderNames.add(typeName.endsWith("s") ? typeName : typeName + "s");
+
+            for(String folderName : folderNames){
+                Fi folder = contentRoot.child(folderName);
+                if(!folder.exists() || !folder.isDirectory()) continue;
+
+                for(Fi file : folder.findAll(f -> f.extEquals("hjson") || f.extEquals("json"))){
+                    String visitId = type.name() + "\u0000" + file.path();
+                    if(!visited.add(visitId)) continue;
+                    readInlineContentFile(mod, type, file, out);
+                }
+            }
+        }
+    }
+
+    private void readInlineContentFile(LoadedMod mod, ContentType type, Fi file, Map<String, String> out){
+        try{
+            Jval value = Jval.read(file.readString("UTF-8"));
+            if(value == null || !value.isObject()) return;
+
+            String inlineName = value.getString("name", null);
+            String inlineDescription = value.getString("description", null);
+            if(!TranslationCore.nonEmpty(inlineName) && !TranslationCore.nonEmpty(inlineDescription)) return;
+
+            String baseName = file.nameWithoutExtension();
+
+            // Mirror ContentParser.locate(): an unprefixed existing content name means this file
+            // patches vanilla/previous content; otherwise Mindustry creates <modId>-<fileName>.
+            String contentName = Vars.content.getByName(type, baseName) != null
+                ? baseName
+                : mod.name + "-" + baseName;
+            String entryBase = type.name() + "." + contentName + ".";
+
+            if(TranslationCore.nonEmpty(inlineName) && !out.containsKey(entryBase + "name")){
+                out.put(entryBase + "name", inlineName);
+            }
+            if(TranslationCore.nonEmpty(inlineDescription) && !out.containsKey(entryBase + "description")){
+                out.put(entryBase + "description", inlineDescription);
+            }
+        }catch(Throwable e){
+            // One malformed/unsupported content file must not make the entire mod unscannable.
+            Log.warn("[Translation Bridge] Skipping inline localization source '@': @", file.path(), shortError(e));
+        }
     }
 
     void captureRuntimeSourceSnapshot(){
